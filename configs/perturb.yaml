@@ -1,0 +1,6 @@
+run_name: perturb
+model: Qwen/Qwen2.5-VL-7B-Instruct
+datasets: [scienceqa, aokvqa]
+baseline: results/baseline/cot.jsonl  # rationales to perturb
+
+perturbations: [truncate] # names of functions that perturb the rationale

@@ -1,0 +1,15 @@
+run_name: baseline
+model: Qwen/Qwen2.5-VL-7B-Instruct
+datasets: [scienceqa, aokvqa]
+
+prompts:
+  direct: "Answer with the option's letter only."
+  cot: "Think step by step. Write each reasoning step on its own numbered line. Then write the final line as 'Answer: <letter>'."
+
+max_new_tokens:
+  direct: 16
+  cot: 1024
+
+generation:
+  do_sample: false
+  repetition_penalty: 1.0

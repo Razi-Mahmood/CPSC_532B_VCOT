@@ -66,8 +66,12 @@ def answer_given_rationale(model, processor, image_path, text_prompt, rationale,
     return {"pred": LETTERS[probs.index(max(probs))], "probs": dict(zip(LETTERS, probs))}
 
 def parse_answer(text):
-    """Letter after 'Answer:' (e.g. 'Answer: A) yes' -> 'A')."""
+    """Letter after 'Answer:' (e.g. 'Answer: A) yes' -> 'A').
+    Falls back to a bare leading letter for direct answers ('C', 'B)', '(A)', 'D.'),
+    but not a leading word like 'A spider...'."""
     m = re.search(r"Answer:\s*\(?([A-E])\b", text)
+    if m is None:
+        m = re.match(r"\s*\(?([A-E])(?:[).:]|\s*$)", text)
     return m.group(1) if m else None
 
 def split_steps(text):

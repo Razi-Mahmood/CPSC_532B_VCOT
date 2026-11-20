@@ -79,9 +79,28 @@ def is_filler(step):
     return bool(_FILLER_RE.match(s)) and len(s) < 220
 
 
-def mark_filler(steps, labels):
-    """Overwrite the label of filler steps with F (also used on labels cached before this fix)."""
-    return [FILLER if is_filler(s) else l for s, l in zip(steps, labels)]
+OTHER = "O"   # restates the options or states the answer: not a reasoning step
+
+
+def mark_filler(steps, labels, choices=()):
+    """Overwrite labels of steps that must never be corrupted (also applied to labels cached
+    before these fixes):
+      F  filler: announces what comes next ("To determine ..., let's analyze ...")
+      O  other: lists the answer options or states the answer (Sarthak's review: Q5, Q78)
+    """
+    out = []
+    for s, l in zip(steps, labels):
+        if is_filler(s):
+            out.append(FILLER)
+        elif is_option_listing(s) or is_answer_statement(s, choices):
+            out.append(OTHER)
+        else:
+            out.append(l)
+    return out
+
+
+def is_corruptible(step, choices=()):
+    return not (is_filler(step) or is_option_listing(step) or is_answer_statement(step, choices))
 
 
 def _number(steps):
@@ -158,6 +177,50 @@ def _words(s):
     return re.sub(r"[^a-z0-9 ]", " ", s.lower()).split()
 
 
+_ENUM_RE = re.compile(r"^\s*(?:step\s*\d+\s*[:.)]|\d+\s*[.)]|[-*\u2022])\s*", re.IGNORECASE)
+# An option label: a capital letter followed by "." or ")" and a space, not part of a word
+# or an abbreviation like "U.S." (the letter must not be preceded by a letter or a dot).
+_OPTION_LABEL_RE = re.compile(r"(?<![A-Za-z.])([A-J])[.)](?=\s)")
+
+
+def strip_format(step):
+    """Remove leading numbering/bullets and markdown bold, so only the wording is compared."""
+    s = _ENUM_RE.sub("", step.strip(), count=1)
+    return " ".join(s.replace("**", "").split())
+
+
+def option_labels(step):
+    """Option labels written in a step, e.g. "A. Plymouth, B. Albany" -> ["A", "B"]."""
+    return _OPTION_LABEL_RE.findall(strip_format(step))
+
+
+_ANSWER_STMT_RE = re.compile(
+    r"\b(?:the\s+)?(?:final\s+|correct\s+)?(?:answer|option|choice)\s+(?:is|would be|must be)\b"
+    r"|\banswer\s*:", re.IGNORECASE)
+
+
+def is_option_listing(step):
+    """A step that just restates the answer options (two or more labelled options)."""
+    return len(set(option_labels(step))) >= 2
+
+
+def is_answer_statement(step, choices=()):
+    """A step that states the answer rather than reasoning toward it:
+    'the correct answer is ...', or a concluding sentence that names an answer option
+    ('Therefore, the state farthest north is Idaho.')."""
+    s = strip_format(step)
+    if _ANSWER_STMT_RE.search(s):
+        return True
+    if re.match(r"^\s*(?:therefore|thus|so|hence|in conclusion|overall"
+                r"|given (?:this|these|the (?:above|analysis|information)))\b", s, re.IGNORECASE):
+        low = " " + re.sub(r"[^a-z0-9 ]", " ", s.lower()) + " "
+        for ch in choices or ():
+            w = " ".join(re.sub(r"[^a-z0-9 ]", " ", str(ch).lower()).split())
+            if len(w) > 1 and f" {w} " in low:
+                return True
+    return False
+
+
 def check_corruption(original, corrupted, choices):
     """Automatic filters. Catch obvious failures; the hand check catches the rest
     (e.g. a 'corruption' that is still true)."""
@@ -166,6 +229,13 @@ def check_corruption(original, corrupted, choices):
     a, b = _words(original), _words(corrupted)
     if a == b:
         return False, "unchanged"
+    # Only numbering / bullets / bold changed, e.g. "1. **Discus**: ..." -> "Discus: ..."
+    # (Sarthak's review: Q7, Q58, Q88).
+    if _words(strip_format(original)) == _words(strip_format(corrupted)):
+        return False, "formatting_only"
+    # Option labels changed, e.g. "D. Boston" -> "E. Boston" (Q5).
+    if option_labels(original) != option_labels(corrupted):
+        return False, "changes_option_labels"
     if re.search(r"\b(?:option|choice)\s+[A-E]\b|\([A-E]\)|answer\s*(?:is|:)", corrupted, re.IGNORECASE):
         return False, "states_answer"
     # Leak: the corrupted step names an answer option the original step did not.

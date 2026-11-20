@@ -6,7 +6,7 @@ Examples (run through run_experiments.sbatch):
     python run_experiments.py --dataset scienceqa --n 100 --drop_conclusion    # conclusion decision
     python run_experiments.py --dataset aokvqa --n 500
     python run_experiments.py --dataset scienceqa --n 500 --offset 500         # split big runs
-    python run_experiments.py --dataset scienceqa --n 100 --corrupt --corrupt_extra
+    python run_experiments.py --dataset scienceqa --n 100 --corrupt --corrupt_extra --corrupt_regen
 
 Each configuration writes its own cache file (name printed at start), e.g.
 results/scienceqa.jsonl, results/scienceqa_rev.jsonl, results/scienceqa_dropconc.jsonl.
@@ -31,6 +31,10 @@ With --corrupt (experiment 4, RQ2):
     corrupt       logical       one error inserted into a logical step, fed back
 With --corrupt_extra as well (instructor's optional suggestion):
     corrupt       grammar / irrelevant / contradiction
+With --corrupt_regen as well (Lanham et al. style):
+    corrupt       perceptual_regen / logical_regen
+                  same corrupted step as above, but the steps AFTER it are rewritten by the
+                  model continuing from the error (instead of keeping the original later steps)
 All corrupt variants are compared against replay.
 The labels and corruptions are written by Qwen-7B itself in text-only mode.
 """
@@ -45,7 +49,8 @@ from steps import strip_final_answer, truncation_variants
 from paraphrase import paraphrase_question, paraphrase_rationale
 from steps import split_steps, join_steps
 from corruption import (label_steps, corrupt_rationale, grammar_noise,
-                        insert_irrelevant, insert_contradiction, mark_filler, is_filler)
+                        insert_irrelevant, insert_contradiction, mark_filler, is_filler,
+                        is_corruptible, check_corruption)
 
 MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
 ATTN = "eager"            # bf16 is broken on the B200 (job 41012); keep float32 + eager
@@ -173,7 +178,8 @@ def run_question(m, cache, ds_name, ex, args):
 
     if getattr(args, "corrupt", False) and rationale.strip():
         run_corruption(m, cache, ds_name, ex, rationale, save, done,
-                       extra=getattr(args, "corrupt_extra", False))
+                       extra=getattr(args, "corrupt_extra", False),
+                       regen=getattr(args, "corrupt_regen", False))
 
     if args.skip_paraphrase:
         return
@@ -204,7 +210,7 @@ def run_question(m, cache, ds_name, ex, args):
                  input_rationale=rrow["paraphrase"])
 
 
-def run_corruption(m, cache, ds_name, ex, rationale, save, done, extra=False):
+def run_corruption(m, cache, ds_name, ex, rationale, save, done, extra=False, regen=False):
     """Experiment 4: label steps, insert one error, feed the corrupted rationale back."""
     qid, ch = ex["qid"], ex["choices"]
     steps = split_steps(rationale)
@@ -214,14 +220,17 @@ def run_corruption(m, cache, ds_name, ex, rationale, save, done, extra=False):
         labels, how = label_steps(m.text, ex["question"], steps)
         cache.add(ds_name, qid, "labels", "steps", steps=steps, labels=labels, method=how,
                   question=ex["question"], choices=ch)
-    labels = mark_filler(steps, cache.get(ds_name, qid, "labels", "steps")["labels"])
+    labels = mark_filler(steps, cache.get(ds_name, qid, "labels", "steps")["labels"], ch)
 
     # 2. build the corrupted rationales
     kinds = ["perceptual", "logical"] + (["grammar", "irrelevant", "contradiction"] if extra else [])
     for kind in kinds:
         prev = cache.get(ds_name, qid, "corrupt", kind)
-        if prev and prev.get("corrupt_ok") and prev.get("original_step") and is_filler(prev["original_step"]):
-            prev = None                   # an earlier run corrupted a filler sentence: redo it
+        if (prev and prev.get("corrupt_ok") and kind in ("perceptual", "logical")
+                and prev.get("original_step") and prev.get("corrupted_step")
+                and (not is_corruptible(prev["original_step"], ch)
+                     or not check_corruption(prev["original_step"], prev["corrupted_step"], ch)[0])):
+            prev = None                   # made before the current checks and fails them: redo it
         if prev and (prev.get("corrupt_ok")
                      or kind in ("grammar", "irrelevant")                  # rule-based: same result again
                      or str(prev.get("corrupt_reason", "")).startswith("no_")):   # no step of this kind
@@ -247,6 +256,38 @@ def run_corruption(m, cache, ds_name, ex, rationale, save, done, extra=False):
             # record the skip (e.g. no perceptual step) - the report needs these counts
             cache.add(ds_name, qid, "corrupt", kind, choices=ch, gold=index_to_letter(ex["gold_idx"]), **info)
 
+    # 3. regenerated variant: same corrupted step, but the model writes the rest itself
+    if regen:
+        for kind in ("perceptual", "logical"):
+            run_regen(m, cache, ds_name, ex, steps, kind, save)
+
+
+def run_regen(m, cache, ds_name, ex, steps, kind, save):
+    """Lanham-style corruption: keep the steps BEFORE the corrupted one, use the SAME corrupted
+    step as the single-step condition, and let the model continue its reasoning from there.
+    The continued rationale is then fed back like every other condition (vs replay).
+    Cache: condition "corrupt", variant "<kind>_regen"."""
+    qid, ch = ex["qid"], ex["choices"]
+    var = f"{kind}_regen"
+    single = cache.get(ds_name, qid, "corrupt", kind)
+    if not single or not single.get("corrupt_ok"):
+        return                                    # no valid single-step corruption to build on
+    prev = cache.get(ds_name, qid, "corrupt", var)
+    if prev and prev.get("corrupted_step") == single["corrupted_step"] and prev.get("corrupt_ok"):
+        return                                    # done, and built on the current corruption
+    idx = single["step_idx"]
+    prefix = steps[:idx] + [single["corrupted_step"]]
+    prefix_text = join_steps(prefix)
+    # continue the model's own reply from the corrupted step (same prompt as CoT)
+    cont_raw = m.chat(ex["image"], build_prompt(COT_TMPL, ex), assistant_prefix=prefix_text + "\n")
+    continuation = strip_final_answer(cont_raw, ch)
+    new_rationale = join_steps(prefix + split_steps(continuation))
+    save("corrupt", var, m.answer_given_rationale(ex, new_rationale),
+         input_rationale=new_rationale, continuation_raw=cont_raw,
+         step_idx=idx, original_step=single["original_step"], corrupted_step=single["corrupted_step"],
+         corrupt_ok=True, corrupt_reason="ok", n_steps=len(steps),
+         n_steps_after=len(split_steps(continuation)), question=ex["question"])
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -259,6 +300,8 @@ def main():
     ap.add_argument("--skip_paraphrase", action="store_true")
     ap.add_argument("--corrupt", action="store_true", help="experiment 4: perceptual/logical corruption")
     ap.add_argument("--corrupt_extra", action="store_true", help="also grammar/irrelevant/contradiction")
+    ap.add_argument("--corrupt_regen", action="store_true",
+                    help="also let the model rewrite the steps after the corrupted one (Lanham-style)")
     ap.add_argument("--out_dir", default="results")
     args = ap.parse_args()
 

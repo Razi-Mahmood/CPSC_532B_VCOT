@@ -311,6 +311,10 @@ class FakeQwen:
     def chat(self, image, user_text, assistant_prefix="", max_new_tokens=1024):
         if "letter only" in user_text:
             return "A"
+        if assistant_prefix:                                 # continuing from a corrupted step
+            if "weakens" in assistant_prefix:
+                return "Overall the second option is weak.\n\nThe answer is A."
+            return "2. **Second option**: key fact supports it.\n\nThe answer is B."
         return ("To decide, look at the options.\n\n1. **First option**: not right.\n\n"
                 "2. **Second option**: key fact supports it.\n\nThe answer is B.")
     def text(self, prompt, max_new_tokens=512):
@@ -327,13 +331,16 @@ class FakeQwen:
         r = prompt.split("Reasoning:\n")[1].split("\n\nRewritten")[0]
         return r.replace("not right", "incorrect")
     def answer_given_rationale(self, ex, rationale, question=None):
+        if "is weak" in rationale:
+            return "(A)"
         if "key fact" in rationale:
             return "(B)"
         return "(A)" if rationale.strip() else "(A)"
 
 
 def _fake_args(**kw):
-    a = types.SimpleNamespace(drop_conclusion=False, skip_paraphrase=False, corrupt=False, corrupt_extra=False)
+    a = types.SimpleNamespace(drop_conclusion=False, skip_paraphrase=False, corrupt=False, corrupt_extra=False,
+                              corrupt_regen=False)
     a.__dict__.update(kw)
     return a
 
@@ -488,3 +495,115 @@ def test_filler_steps_never_corrupted():
     assert labels == ["F", "L", "L"]
     r = corrupt_rationale(gen, "q", ["discus", "armored catfish"], steps, labels, "perceptual")
     assert not r["ok"] and r["reason"] == "no_perceptual_step"
+
+
+# ---------------- corruption-check fixes from Sarthak's review (Nov 2026)
+def test_formatting_only_edit_rejected():
+    """Q7/Q58/Q88: only the numbering/bold was removed - the claim is unchanged."""
+    o = "1. **Sand Martin**: This is a small insect-eating bird that primarily feeds on insects."
+    c = "Sand Martin: This is a small insect-eating bird that primarily feeds on insects."
+    assert check_corruption(o, c, ["sand martin", "Cape vulture"]) == (False, "formatting_only")
+    # a real edit to a numbered step is still accepted
+    real = "1. **Sand Martin**: This is a large meat-eating bird that primarily feeds on insects."
+    assert check_corruption(o, real, ["x", "y"])[0]
+
+
+def test_option_label_change_rejected():
+    """Q5: 'D. Boston' changed to a non-existent option 'E. Boston'."""
+    from corruption import option_labels
+    o = "The capital of Massachusetts is Boston, which is option D. Boston is on the coast."
+    assert option_labels("The options provided are A. Plymouth, B. Albany, C. Wichita, and D. Boston.") == ["A", "B", "C", "D"]
+    assert option_labels("The U.S. map shows Idaho. It is in the north.") == []      # not labels
+    o = "The answer choices include C. Wichita and D. Boston as possible capitals."
+    c = "The answer choices include C. Wichita and E. Boston as possible capitals."
+    assert check_corruption(o, c, ["Plymouth", "Albany", "Wichita", "Boston"]) == (False, "changes_option_labels")
+
+
+def test_option_listing_and_answer_steps_not_corruptible():
+    """Q5: a step that only lists the options; Q78: a step that states the answer."""
+    from corruption import is_corruptible, mark_filler
+    ch = ["Alabama", "Idaho", "South Carolina", "Oklahoma"]
+    listing = "3. Match the correct option with the information: The options provided are A. Plymouth, B. Albany, C. Wichita, and D. Boston."
+    answer1 = "Therefore, the state farthest north is Idaho."
+    answer2 = "So the correct answer is Idaho."
+    answer3 = "Given this information, the state farthest north is Idaho."
+    assert not is_corruptible(answer3, ch)
+    assert is_corruptible("Given that Idaho borders Canada, it lies far north.", ch)   # premise, not a conclusion
+    reasoning = "From the map, Idaho is positioned farther north than Alabama and Oklahoma."
+    perceptual = "2. **Idaho**: Located in the northwestern part of the United States."
+    assert not is_corruptible(listing, ch)
+    assert not is_corruptible(answer1, ch)
+    assert not is_corruptible(answer2, ch)
+    assert is_corruptible(reasoning, ch) and is_corruptible(perceptual, ch)
+    steps = [listing, perceptual, reasoning, answer1]
+    assert mark_filler(steps, ["P", "P", "L", "L"], ch) == ["O", "P", "L", "O"]
+    # corruption never picks the listing or the answer step
+    gen = lambda p: p.split("Original step: ")[1].split("\n")[0].replace("north", "south").replace("northwestern", "southeastern")
+    labels = mark_filler(steps, ["P", "P", "L", "L"], ch)
+    for kind in ("perceptual", "logical"):
+        r = corrupt_rationale(gen, "q", ch, steps, labels, kind, seed=3)
+        assert r["ok"] and r["step_idx"] in (1, 2), r
+
+
+def test_old_bad_corruptions_are_redone(tmp_path):
+    """A corruption saved before these checks (numbering-only) is redone on the next run."""
+    from run_experiments import run_question
+    from cache import ResultCache
+    ex = dict(qid="0", image=None, question="Which option is best for this image?",
+              choices=["cat", "dog"], gold_idx=1, hint="")
+    p = str(tmp_path / "r.jsonl")
+    c = ResultCache(p)
+    run_question(FakeQwen(None), c, "toy", ex, _fake_args(corrupt=True, skip_paraphrase=True))
+    good = c.get("toy", "0", "corrupt", "logical")
+    assert good["corrupt_ok"]
+    # overwrite with an old-style bad corruption: numbering removed only
+    c.add("toy", "0", "corrupt", "logical", corrupt_ok=True, parsed_answer="B", gold="B", choices=["cat", "dog"],
+          original_step=good["original_step"], corrupted_step=strip_fmt(good["original_step"]), step_idx=good["step_idx"])
+    c2 = ResultCache(p)
+    run_question(FakeQwen(None), c2, "toy", ex, _fake_args(corrupt=True, skip_paraphrase=True))
+    redone = c2.get("toy", "0", "corrupt", "logical")
+    assert redone["corrupted_step"] != strip_fmt(good["original_step"])
+    assert check_corruption(redone["original_step"], redone["corrupted_step"], ["cat", "dog"])[0]
+
+
+from corruption import strip_format as strip_fmt
+
+
+def test_regenerated_corruption(tmp_path):
+    """Same corrupted step as the single-step condition, but the model rewrites the rest."""
+    from run_experiments import run_question
+    from analyze import summarize
+    from cache import ResultCache
+    exs = [dict(qid=str(i), image=None, question="Which option is best for this image?",
+                choices=["cat", "dog"], gold_idx=1, hint="") for i in range(8)]
+    p = str(tmp_path / "g.jsonl")
+    c = ResultCache(p)
+    args = _fake_args(corrupt=True, corrupt_regen=True, skip_paraphrase=True)
+    for ex in exs:
+        run_question(FakeQwen(None), c, "toy", ex, args)
+    rows = {}
+    for l in open(p):
+        r = json.loads(l)
+        rows[(r["question_id"], r["condition"], r["variant"])] = r
+    regen = [r for k, r in rows.items() if k[2] == "logical_regen"]
+    assert regen, "no regenerated rows"
+    saw_weakens = False
+    for r in regen:
+        single = rows[(r["question_id"], "corrupt", "logical")]
+        assert r["corrupted_step"] == single["corrupted_step"]        # same error as single-step
+        steps_before = r["input_rationale"].split("\n")[:r["step_idx"]]
+        assert r["input_rationale"].split("\n")[r["step_idx"]] == single["corrupted_step"]
+        if "weakens" in single["corrupted_step"]:
+            saw_weakens = True
+            assert single["parsed_answer"] == "B"      # later original steps keep the old answer
+            assert r["parsed_answer"] == "A"           # model continues from the error -> flips
+    assert saw_weakens, "test setup: no question corrupted the key-fact step"
+    lines = []
+    summarize(p, out=lines.append)
+    assert any("Single vs regenerated, logical" in l for l in lines), lines
+    # resume: nothing new
+    n = sum(1 for _ in open(p))
+    c2 = ResultCache(p)
+    for ex in exs:
+        run_question(FakeQwen(None), c2, "toy", ex, args)
+    assert sum(1 for _ in open(p)) == n

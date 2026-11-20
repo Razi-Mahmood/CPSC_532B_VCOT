@@ -96,7 +96,8 @@ def summarize(path, out=print):
     out("\nFlip rates vs reference (McNemar p on accuracy change):")
     tests = [("truncate", f, replay, "replay") for f in ("0.00", "0.25", "0.50", "0.75")]
     tests += [("corrupt", k, replay, "replay")
-              for k in ("perceptual", "logical", "grammar", "irrelevant", "contradiction")]
+              for k in ("perceptual", "logical", "grammar", "irrelevant", "contradiction",
+                        "perceptual_regen", "logical_regen")]
     tests += [("paraphrase_r", "orig", replay, "replay"),
               ("paraphrase_q", "cot", cot, "cot"),
               ("paraphrase_q", "direct", direct, "direct")]
@@ -141,26 +142,44 @@ def summarize(path, out=print):
         labs = [r for (_, c, v), r in rows.items() if c == "labels"]
         if labs:
             from corruption import mark_filler
-            fixed = [mark_filler(r["steps"], r["labels"]) for r in labs]
+            fixed = [mark_filler(r["steps"], r["labels"], r.get("choices") or ()) for r in labs]
             allp = sum(l == "P" for ls in fixed for l in ls)
             alll = sum(l == "L" for ls in fixed for l in ls)
             allf = sum(l == "F" for ls in fixed for l in ls)
+            allo = sum(l == "O" for ls in fixed for l in ls)
             withp = sum("P" in ls for ls in fixed)
             fb = sum(r["method"] == "heuristic_fallback" for r in labs)
-            out(f"  step labels: {allp} perceptual, {alll} logical, {allf} filler; "
+            out(f"  step labels: {allp} perceptual, {alll} logical, {allf} filler, "
+                f"{allo} option-listing/answer (never corrupted); "
                 f"{withp}/{len(labs)} rationales contain at least one perceptual step; "
                 f"heuristic fallback used for {fb}/{len(labs)} questions")
         # RQ2: compare perceptual vs logical on the SAME questions (both corrupted ok)
-        pa, la = answers(rows, "corrupt", "perceptual"), answers(rows, "corrupt", "logical")
-        both = [q for q in pa if q in la and pa[q] and la[q] and replay.get(q)]
-        if both:
+        for suffix, name in (("", "single step"), ("_regen", "regenerated after the error")):
+            pa = answers(rows, "corrupt", "perceptual" + suffix)
+            la = answers(rows, "corrupt", "logical" + suffix)
+            both = [q for q in pa if q in la and pa[q] and la[q] and replay.get(q)]
+            if not both:
+                continue
             pf = sum(pa[q] != replay[q] for q in both)
             lf = sum(la[q] != replay[q] for q in both)
             only_p = sum(pa[q] != replay[q] and la[q] == replay[q] for q in both)
             only_l = sum(la[q] != replay[q] and pa[q] == replay[q] for q in both)
-            out(f"\nRQ2 (questions with both kinds, n={len(both)}): perceptual flips {pf} ({pf/len(both):.1%}), "
+            out(f"\nRQ2, {name} (questions with both kinds, n={len(both)}): perceptual flips {pf} ({pf/len(both):.1%}), "
                 f"logical flips {lf} ({lf/len(both):.1%}); only-perceptual {only_p}, only-logical {only_l}, "
                 f"McNemar p={mcnemar_p(only_p, only_l):.3f}")
+
+        # single-step vs regenerated, same corrupted step, same questions
+        for kind in ("perceptual", "logical"):
+            s, g = answers(rows, "corrupt", kind), answers(rows, "corrupt", kind + "_regen")
+            qs = [q for q in s if q in g and s[q] and g[q] and replay.get(q)]
+            if not qs:
+                continue
+            sf = sum(s[q] != replay[q] for q in qs)
+            gf = sum(g[q] != replay[q] for q in qs)
+            only_g = sum(g[q] != replay[q] and s[q] == replay[q] for q in qs)
+            only_s = sum(s[q] != replay[q] and g[q] == replay[q] for q in qs)
+            out(f"Single vs regenerated, {kind} (same error, n={len(qs)}): single {sf} flips, regenerated {gf} flips; "
+                f"only-regenerated {only_g}, only-single {only_s}, McNemar p={mcnemar_p(only_g, only_s):.3f}")
 
     # direct vs cot
     qs = [q for q in direct if q in cot and direct[q] and cot[q]]
@@ -239,11 +258,12 @@ def compare_runs(path_a, path_b, out=print):
 
 def corruption_check_csvs(path, prefix, n=50):
     """Writes <prefix>_labels.csv and <prefix>_corruptions.csv for hand checking."""
-    from corruption import export_label_check, export_corruption_check, is_filler as _is_filler
+    from corruption import export_label_check, export_corruption_check, is_corruptible as _is_corruptible
     rows = load(path)
     lab = [dict(question_id=q, question=r.get("question", ""), step_idx=i, step=s, label=l)
            for (q, c, v), r in rows.items() if c == "labels"
-           for i, (s, l) in enumerate(zip(r["steps"], r["labels"])) if not _is_filler(s)]
+           for i, (s, l) in enumerate(zip(r["steps"], r["labels"]))
+           if _is_corruptible(s, r.get("choices") or ())]
     export_label_check(lab, prefix + "_labels.csv", n=n)
     cor = [dict(ok=True, question_id=q, question=r.get("question", ""), kind=v, step_idx=r.get("step_idx"),
                 original_step=r.get("original_step"), corrupted_step=r.get("corrupted_step"))

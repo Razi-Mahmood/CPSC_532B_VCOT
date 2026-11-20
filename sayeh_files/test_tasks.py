@@ -316,10 +316,10 @@ class FakeQwen:
                 return "Overall the second option is weak.\n\nThe answer is A."
             return "2. **Second option**: key fact supports it.\n\nThe answer is B."
         return ("To decide, look at the options.\n\n1. **First option**: not right.\n\n"
-                "2. **Second option**: key fact supports it.\n\nThe answer is B.")
+                "2. **Second option**: key fact supports it.\n\nThat settles the comparison.\n\nThe answer is B.")
     def text(self, prompt, max_new_tokens=512):
         if "label each step" in prompt:
-            return "1: P\n2: L\n3: L"
+            return "1: P\n2: L\n3: L\n4: L"
         if "Original step:" in prompt:                      # perceptual / logical corruption
             step = prompt.split("Original step: ")[1].split("\n")[0]
             return step.replace("look at", "ignore").replace("supports", "weakens").replace("not right", "right")
@@ -363,7 +363,8 @@ def test_run_and_analyze(tmp_path):
         assert k in conds, k
     res = summarize(str(tmp_path / "n.jsonl"), out=lambda *a: None)
     assert res[("truncate", "0.00")]["rate"] == 1.0          # no rationale -> A, replay said B
-    assert res[("truncate", "0.75")]["rate"] == 1.0          # 3 steps -> keeps 2, drops the key-fact step
+    assert res[("truncate", "0.75")]["rate"] == 0.0          # 4 steps -> keeps 3, incl. the key-fact step
+    assert res[("truncate", "0.50")]["rate"] == 1.0          # keeps 2, drops the key-fact step
     assert res[("paraphrase_r", "orig")]["rate"] == 0.0
     lines = []
     option_order(str(tmp_path / "n.jsonl"), str(tmp_path / "r.jsonl"), out=lines.append)
@@ -403,7 +404,7 @@ def test_corruption_in_runner(tmp_path):
         assert k in got, (k, got)
     assert not any(r["condition"].startswith("paraphrase") for r in rows)     # skip_paraphrase respected
     lab = next(r for r in rows if r["condition"] == "labels")
-    assert lab["labels"] == ["P", "L", "L"] and len(lab["steps"]) == 3
+    assert lab["labels"] == ["P", "L", "L", "L"] and len(lab["steps"]) == 4
     per = next(r for r in rows if r["condition"] == "corrupt" and r["variant"] == "perceptual")
     assert per["corrupt_ok"] and per["step_idx"] == 0 and "ignore" in per["corrupted_step"]
     res = summarize(p, out=lambda *a: None)
@@ -585,7 +586,9 @@ def test_regenerated_corruption(tmp_path):
     for l in open(p):
         r = json.loads(l)
         rows[(r["question_id"], r["condition"], r["variant"])] = r
-    regen = [r for k, r in rows.items() if k[2] == "logical_regen"]
+    regen = [r for k, r in rows.items() if k[2] == "logical_regen" and r.get("corrupt_ok")]
+    last_step = [r for k, r in rows.items() if k[2] == "logical_regen" and not r.get("corrupt_ok")]
+    assert all(r["corrupt_reason"] == "no_later_steps" for r in last_step)
     assert regen, "no regenerated rows"
     saw_weakens = False
     for r in regen:
@@ -607,3 +610,19 @@ def test_regenerated_corruption(tmp_path):
     for ex in exs:
         run_question(FakeQwen(None), c2, "toy", ex, args)
     assert sum(1 for _ in open(p)) == n
+
+
+def test_option_line_and_final_conclusion_not_corruptible():
+    """Regenerated examples (Nov 20): an option line was corrupted ('bird of prey' -> 'bird of
+    flight'), and the final conclusion of Q4 was corrupted (which also repaired it)."""
+    from corruption import mark_filler, is_option_listing
+    assert is_option_listing("- B. New Zealand falcon (a bird of prey)")
+    assert is_option_listing("A. sable (which is not an animal but a type of fur)")
+    assert not is_option_listing("A sable is a small mammal with dense fur.")
+    q4 = ["To determine if the statement is true or false, we need to compare the volumes.",
+          "Jupiter's volume is approximately 8790 times larger than Mars's volume.",
+          "Since 8790 is indeed more than 10,000, the statement is false."]
+    assert mark_filler(q4, ["L", "L", "L"], ["true", "false"]) == ["L", "L", "O"]
+    # a NON-final step that mentions an option stays corruptible (it may be reasoning)
+    q0 = ["Discus fish are surface feeders.", "Armored catfish feed at the bottom.", "That settles it."]
+    assert mark_filler(q0, ["L", "L", "L"], ["discus", "armored catfish"]) == ["L", "L", "L"]

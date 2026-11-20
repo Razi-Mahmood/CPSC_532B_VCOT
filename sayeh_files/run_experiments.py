@@ -227,10 +227,13 @@ def run_corruption(m, cache, ds_name, ex, rationale, save, done, extra=False, re
     for kind in kinds:
         prev = cache.get(ds_name, qid, "corrupt", kind)
         if (prev and prev.get("corrupt_ok") and kind in ("perceptual", "logical")
-                and prev.get("original_step") and prev.get("corrupted_step")
-                and (not is_corruptible(prev["original_step"], ch)
-                     or not check_corruption(prev["original_step"], prev["corrupted_step"], ch)[0])):
-            prev = None                   # made before the current checks and fails them: redo it
+                and prev.get("original_step") and prev.get("corrupted_step")):
+            i = prev.get("step_idx")
+            still_valid = (isinstance(i, int) and 0 <= i < len(steps) and steps[i] == prev["original_step"]
+                           and labels[i] in ("P", "L")      # current rules still allow this step
+                           and check_corruption(prev["original_step"], prev["corrupted_step"], ch)[0])
+            if not still_valid:
+                prev = None               # made before the current checks and fails them: redo it
         if prev and (prev.get("corrupt_ok")
                      or kind in ("grammar", "irrelevant")                  # rule-based: same result again
                      or str(prev.get("corrupt_reason", "")).startswith("no_")):   # no step of this kind
@@ -273,9 +276,17 @@ def run_regen(m, cache, ds_name, ex, steps, kind, save):
     if not single or not single.get("corrupt_ok"):
         return                                    # no valid single-step corruption to build on
     prev = cache.get(ds_name, qid, "corrupt", var)
-    if prev and prev.get("corrupted_step") == single["corrupted_step"] and prev.get("corrupt_ok"):
+    if prev and prev.get("corrupted_step") == single["corrupted_step"] and (
+            prev.get("corrupt_ok") or prev.get("corrupt_reason") == "no_later_steps"):
         return                                    # done, and built on the current corruption
     idx = single["step_idx"]
+    if idx >= len(steps) - 1:
+        # the corrupted step is the last one: nothing comes after it to regenerate
+        cache.add(ds_name, qid, "corrupt", var, corrupt_ok=False, corrupt_reason="no_later_steps",
+                  step_idx=idx, original_step=single["original_step"],
+                  corrupted_step=single["corrupted_step"], choices=ch,
+                  gold=index_to_letter(ex["gold_idx"]), question=ex["question"])
+        return
     prefix = steps[:idx] + [single["corrupted_step"]]
     prefix_text = join_steps(prefix)
     # continue the model's own reply from the corrupted step (same prompt as CoT)

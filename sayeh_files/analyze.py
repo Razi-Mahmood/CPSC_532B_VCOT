@@ -168,6 +168,13 @@ def summarize(path, out=print):
                 f"logical flips {lf} ({lf/len(both):.1%}); only-perceptual {only_p}, only-logical {only_l}, "
                 f"McNemar p={mcnemar_p(only_p, only_l):.3f}")
 
+        # regenerated rows where the model wrote nothing after the error (answered straight away)
+        for kind in ("perceptual", "logical"):
+            g = [r for (_, c, v), r in rows.items() if c == "corrupt" and v == kind + "_regen" and r.get("corrupt_ok")]
+            if g:
+                empty = sum(r.get("n_steps_after") == 0 for r in g)
+                out(f"  {kind}_regen: model added no new steps after the error in {empty}/{len(g)} cases")
+
         # single-step vs regenerated, same corrupted step, same questions
         for kind in ("perceptual", "logical"):
             s, g = answers(rows, "corrupt", kind), answers(rows, "corrupt", kind + "_regen")

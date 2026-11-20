@@ -86,13 +86,19 @@ def mark_filler(steps, labels, choices=()):
     """Overwrite labels of steps that must never be corrupted (also applied to labels cached
     before these fixes):
       F  filler: announces what comes next ("To determine ..., let's analyze ...")
-      O  other: lists the answer options or states the answer (Sarthak's review: Q5, Q78)
+      O  other: lists the answer options, starts with an option label, states the answer,
+         or is the final step and names an answer option (Sarthak's review: Q5, Q78;
+         regenerated examples Nov 20: falcon option line, Jupiter conclusion)
     """
     out = []
-    for s, l in zip(steps, labels):
+    last = len(steps) - 1
+    for i, (s, l) in enumerate(zip(steps, labels)):
         if is_filler(s):
             out.append(FILLER)
-        elif is_option_listing(s) or is_answer_statement(s, choices):
+        elif (is_option_listing(s) or is_answer_statement(s, choices)
+              # the final step that names an answer option is the conclusion, however it starts
+              # ("Since 8790 is ... , the statement is false.")
+              or (i == last and names_option(s, choices))):
             out.append(OTHER)
         else:
             out.append(l)
@@ -199,9 +205,23 @@ _ANSWER_STMT_RE = re.compile(
     r"|\banswer\s*:", re.IGNORECASE)
 
 
+_STARTS_WITH_OPTION_RE = re.compile(r"^[A-J][.)]\s")
+
+
 def is_option_listing(step):
-    """A step that just restates the answer options (two or more labelled options)."""
-    return len(set(option_labels(step))) >= 2
+    """A step that just restates the answer options: two or more labelled options, or a line
+    that starts with an option label ("- B. New Zealand falcon (a bird of prey)")."""
+    return len(set(option_labels(step))) >= 2 or bool(_STARTS_WITH_OPTION_RE.match(strip_format(step)))
+
+
+def names_option(step, choices=()):
+    """True if the step mentions one of the answer options' text."""
+    text = " " + " ".join(re.sub(r"[^a-z0-9 ]", " ", strip_format(step).lower()).split()) + " "
+    for ch in choices or ():
+        w = " ".join(re.sub(r"[^a-z0-9 ]", " ", str(ch).lower()).split())
+        if len(w) > 1 and f" {w} " in text:
+            return True
+    return False
 
 
 def is_answer_statement(step, choices=()):

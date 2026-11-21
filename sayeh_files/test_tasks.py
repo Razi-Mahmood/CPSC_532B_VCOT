@@ -626,3 +626,23 @@ def test_option_line_and_final_conclusion_not_corruptible():
     # a NON-final step that mentions an option stays corruptible (it may be reasoning)
     q0 = ["Discus fish are surface feeders.", "Armored catfish feed at the bottom.", "That settles it."]
     assert mark_filler(q0, ["L", "L", "L"], ["discus", "armored catfish"]) == ["L", "L", "L"]
+
+
+def test_stale_regen_row_is_retired(tmp_path):
+    """Nov 21: perceptual had 41 valid rows but perceptual_regen still had 42."""
+    from run_experiments import run_question
+    from cache import ResultCache
+    ex = dict(qid="0", image=None, question="Which option is best for this image?",
+              choices=["cat", "dog"], gold_idx=1, hint="")
+    p = str(tmp_path / "s.jsonl")
+    c = ResultCache(p)
+    args = _fake_args(corrupt=True, corrupt_regen=True, skip_paraphrase=True)
+    run_question(FakeQwen(None), c, "toy", ex, args)
+    regen = c.get("toy", "0", "corrupt", "perceptual_regen")
+    assert regen and regen["corrupt_ok"]
+    # the single-step corruption becomes invalid (e.g. a new rule excludes its step)
+    c.add("toy", "0", "corrupt", "perceptual", corrupt_ok=False, corrupt_reason="no_perceptual_step",
+          choices=["cat", "dog"], gold="B")
+    run_question(FakeQwen(None), ResultCache(p), "toy", ex, args)
+    after = ResultCache(p).get("toy", "0", "corrupt", "perceptual_regen")
+    assert after["corrupt_ok"] is False and after["corrupt_reason"] == "single_step_invalid"

@@ -273,9 +273,16 @@ def run_regen(m, cache, ds_name, ex, steps, kind, save):
     qid, ch = ex["qid"], ex["choices"]
     var = f"{kind}_regen"
     single = cache.get(ds_name, qid, "corrupt", kind)
-    if not single or not single.get("corrupt_ok"):
-        return                                    # no valid single-step corruption to build on
     prev = cache.get(ds_name, qid, "corrupt", var)
+    if not single or not single.get("corrupt_ok"):
+        # no valid single-step corruption to build on; retire a regenerated row left from
+        # an earlier run whose corruption no longer passes the checks
+        if prev and prev.get("corrupt_ok"):
+            cache.add(ds_name, qid, "corrupt", var, corrupt_ok=False, corrupt_reason="single_step_invalid",
+                      step_idx=prev.get("step_idx"), original_step=prev.get("original_step"),
+                      corrupted_step=prev.get("corrupted_step"), choices=ch,
+                      gold=index_to_letter(ex["gold_idx"]), question=ex["question"])
+        return
     if prev and prev.get("corrupted_step") == single["corrupted_step"] and (
             prev.get("corrupt_ok") or prev.get("corrupt_reason") == "no_later_steps"):
         return                                    # done, and built on the current corruption

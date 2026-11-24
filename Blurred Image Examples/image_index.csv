@@ -1,0 +1,21 @@
+example,original_file,blurred_file,source_image,radius_pixels,sigma_fraction,cohort
+1,Image 01.png,Image 01 blurred.png,aok_5jGPL4u8JFHkLyQCG354uG.png,4.82,0.01,20-image pilot; not the 500-question validation cohorts
+2,Image 02.png,Image 02 blurred.png,aok_99Ra8z27K9FLU2u5acKAqp.png,4.89,0.01,20-image pilot; not the 500-question validation cohorts
+3,Image 03.png,Image 03 blurred.png,aok_FFhuFfMAy38Z7WWr6q7faA.png,4.8,0.01,20-image pilot; not the 500-question validation cohorts
+4,Image 04.png,Image 04 blurred.png,aok_FG6kmHCaikmwGGpw9RhpSD.png,4.2700000000000005,0.01,20-image pilot; not the 500-question validation cohorts
+5,Image 05.png,Image 05 blurred.png,aok_PCavtGPpEZnoW3vRUb2vbM.png,4.2700000000000005,0.01,20-image pilot; not the 500-question validation cohorts
+6,Image 06.png,Image 06 blurred.png,aok_QsW8sBQzRc4Zsxds7WwTJ7.png,3.34,0.01,20-image pilot; not the 500-question validation cohorts
+7,Image 07.png,Image 07 blurred.png,aok_eBgzKWWRWbkzRJsrfBqGBV.png,3.5100000000000002,0.01,20-image pilot; not the 500-question validation cohorts
+8,Image 08.png,Image 08 blurred.png,aok_n3EWd223KWajDuTgFCGZmw.png,5.48,0.01,20-image pilot; not the 500-question validation cohorts
+9,Image 09.png,Image 09 blurred.png,aok_n3q6CBsJfobMm4vAqMGi38.png,4.8,0.01,20-image pilot; not the 500-question validation cohorts
+10,Image 10.png,Image 10 blurred.png,aok_nqDVieEVdjDt3CELi7g5Zh.png,4.8,0.01,20-image pilot; not the 500-question validation cohorts
+11,Image 11.png,Image 11 blurred.png,sqa_test_150.png,2.02,0.01,20-image pilot; not the 500-question validation cohorts
+12,Image 12.png,Image 12 blurred.png,sqa_test_1650.png,4.29,0.01,20-image pilot; not the 500-question validation cohorts
+13,Image 13.png,Image 13 blurred.png,sqa_test_1666.png,4.0,0.01,20-image pilot; not the 500-question validation cohorts
+14,Image 14.png,Image 14 blurred.png,sqa_test_2076.png,4.29,0.01,20-image pilot; not the 500-question validation cohorts
+15,Image 15.png,Image 15 blurred.png,sqa_test_2129.png,1.71,0.01,20-image pilot; not the 500-question validation cohorts
+16,Image 16.png,Image 16 blurred.png,sqa_test_2531.png,2.37,0.01,20-image pilot; not the 500-question validation cohorts
+17,Image 17.png,Image 17 blurred.png,sqa_test_3243.png,2.0,0.01,20-image pilot; not the 500-question validation cohorts
+18,Image 18.png,Image 18 blurred.png,sqa_test_3450.png,2.02,0.01,20-image pilot; not the 500-question validation cohorts
+19,Image 19.png,Image 19 blurred.png,sqa_test_3665.png,0.93,0.01,20-image pilot; not the 500-question validation cohorts
+20,Image 20.png,Image 20 blurred.png,sqa_test_681.png,3.58,0.01,20-image pilot; not the 500-question validation cohorts

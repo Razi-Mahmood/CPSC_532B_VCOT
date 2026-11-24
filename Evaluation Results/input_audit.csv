@@ -1,0 +1,3 @@
+dataset,rows,matched_unique_ids,signature_checks_passed,answer_text_checks_passed,correct_label_checks_passed,forecast_answer_matches,source_sha256,matching_method
+scienceqa,500,500,500,500,500,500,8d3646dcbc1120888786a7874491d6ddd04956dbe4d46fe91ec68b487bfaf730,Ordered question/options/scene signatures mapped to earlier forecast question IDs; repeated questions not matched by question alone
+aokvqa,500,500,500,500,500,500,b45abf81b772e200559ab49b46d825b3fe13767b8f53f963bda251d16022890b,Ordered question/options/scene signatures mapped to earlier forecast question IDs; repeated questions not matched by question alone

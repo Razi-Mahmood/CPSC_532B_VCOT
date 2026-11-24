@@ -1,0 +1,7 @@
+dataset,category,count
+scienceqa,Correct,348
+scienceqa,Close,122
+scienceqa,Incorrect,30
+aokvqa,Correct,340
+aokvqa,Incorrect,101
+aokvqa,Close,59
